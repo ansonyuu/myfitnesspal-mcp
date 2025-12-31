@@ -1,0 +1,39 @@
+{
+  "name": "myfitnesspal-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for MyFitnessPal integration - retrieve nutrition data and log calories",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "lint": "eslint src/**/*.ts",
+    "export-cookies": "tsx src/scripts/export-cookies.ts"
+  },
+  "keywords": [
+    "mcp",
+    "myfitnesspal",
+    "nutrition",
+    "calorie-tracking"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.5",
+    "tough-cookie": "^5.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/tough-cookie": "^4.0.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
+
