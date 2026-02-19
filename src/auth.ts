@@ -2,8 +2,13 @@
  * Cookie-based authentication manager for MyFitnessPal.
  *
  * @remarks
- * Handles loading session cookies from environment variables and
- * preparing them for use with HTTP requests to MyFitnessPal.
+ * MFP migrated from Rails to Next.js with NextAuth.js. All API access
+ * goes through the BFF proxy at /api/services/ which handles Bearer token
+ * injection server-side. Only the session cookie is needed client-side.
+ *
+ * Supports two modes:
+ * 1. Raw cookie header string (recommended) - copy the full Cookie header from DevTools
+ * 2. Legacy single-cookie mode - provide just the session token value
  */
 
 import { config } from 'dotenv';
@@ -16,9 +21,6 @@ config();
 /** MyFitnessPal base URL */
 const MFP_BASE_URL = 'https://www.myfitnesspal.com';
 
-/** Required cookie name for MFP session */
-const MFP_SESSION_COOKIE_NAME = 'mfp_session';
-
 /**
  * Manages authentication state for MyFitnessPal requests.
  */
@@ -26,6 +28,9 @@ export class AuthManager {
   private cookieJar: CookieJar;
   private config: MFPClientConfig;
   private initialized: boolean = false;
+
+  /** Raw cookie header string (if provided as full header) */
+  private rawCookieHeader: string | null = null;
 
   /**
    * Creates a new AuthManager instance.
@@ -41,6 +46,14 @@ export class AuthManager {
   }
 
   /**
+   * Detects whether the session cookie value is a raw cookie header string
+   * (contains multiple key=value pairs separated by '; ') or a single token value.
+   */
+  private isRawCookieHeader(value: string): boolean {
+    return value.includes('; ') && value.includes('=');
+  }
+
+  /**
    * Initializes the cookie jar with the session cookie.
    *
    * @throws Error if the session cookie is not configured
@@ -53,21 +66,33 @@ export class AuthManager {
     if (!this.config.sessionCookie) {
       throw new Error(
         'MFP_SESSION_COOKIE is not configured. Please set it in your .env file.\n' +
-        'See README.md for instructions on how to export your session cookie.'
+        'Copy the full Cookie header from DevTools > Network tab > any MFP request.'
       );
     }
 
-    // Create the session cookie
-    const cookie = new Cookie({
-      key: MFP_SESSION_COOKIE_NAME,
-      value: this.config.sessionCookie,
-      domain: 'www.myfitnesspal.com',
-      path: '/',
-      secure: true,
-      httpOnly: true,
-    });
+    if (this.isRawCookieHeader(this.config.sessionCookie)) {
+      // Raw cookie header mode - use as-is
+      this.rawCookieHeader = this.config.sessionCookie;
+    } else {
+      // Legacy single-value mode - try both old and new cookie names
+      const cookieNames = [
+        '__Secure-next-auth.session-token',
+        'mfp_session',
+      ];
 
-    await this.cookieJar.setCookie(cookie, MFP_BASE_URL);
+      for (const name of cookieNames) {
+        const cookie = new Cookie({
+          key: name,
+          value: this.config.sessionCookie,
+          domain: 'www.myfitnesspal.com',
+          path: '/',
+          secure: true,
+          httpOnly: true,
+        });
+        await this.cookieJar.setCookie(cookie, MFP_BASE_URL);
+      }
+    }
+
     this.initialized = true;
   }
 
@@ -78,6 +103,11 @@ export class AuthManager {
    */
   async getCookieHeader(): Promise<string> {
     await this.initialize();
+
+    if (this.rawCookieHeader) {
+      return this.rawCookieHeader;
+    }
+
     return this.cookieJar.getCookieString(MFP_BASE_URL);
   }
 
@@ -88,14 +118,12 @@ export class AuthManager {
    */
   async getAuthHeaders(): Promise<Record<string, string>> {
     const cookieHeader = await this.getCookieHeader();
-    
+
     return {
       'Cookie': cookieHeader,
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept': 'application/json',
+      'Referer': 'https://www.myfitnesspal.com/',
     };
   }
 
@@ -106,26 +134,10 @@ export class AuthManager {
    */
   async getJsonHeaders(): Promise<Record<string, string>> {
     const baseHeaders = await this.getAuthHeaders();
-    
-    return {
-      ...baseHeaders,
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-    };
-  }
 
-  /**
-   * Gets headers for form submission requests.
-   *
-   * @returns Headers object for form POST requests
-   */
-  async getFormHeaders(): Promise<Record<string, string>> {
-    const baseHeaders = await this.getAuthHeaders();
-    
     return {
       ...baseHeaders,
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Content-Type': 'application/json',
     };
   }
 
@@ -171,4 +183,3 @@ export async function createAuthManager(config?: Partial<MFPClientConfig>): Prom
   await manager.initialize();
   return manager;
 }
-

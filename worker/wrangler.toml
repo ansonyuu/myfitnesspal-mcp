@@ -1,6 +1,6 @@
 name = "myfitnesspal-mcp"
 main = "src/index.ts"
-compatibility_date = "2024-12-01"
+compatibility_date = "2025-03-10"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
@@ -9,4 +9,6 @@ compatibility_flags = ["nodejs_compat"]
 
 # Secrets are set via: wrangler secret put MFP_SESSION_COOKIE
 # Do NOT put your session cookie here - use secrets instead
+
+
 

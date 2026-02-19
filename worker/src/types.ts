@@ -1,8 +1,5 @@
 /**
  * TypeScript interfaces for MyFitnessPal data structures.
- *
- * @remarks
- * These types represent the data returned from scraping the MyFitnessPal website.
  */
 
 /**
@@ -166,3 +163,128 @@ export interface QuickAddResult {
   calories: number;
 }
 
+// --- Food Search & Diary Write Types ---
+
+/**
+ * A single serving size option for a food item.
+ */
+export interface ServingSize {
+  /** Serving size ID */
+  id: string;
+  /** Multiplier relative to the base serving */
+  nutrition_multiplier: number;
+  /** Human-readable serving description (e.g., "1 cup", "100 g") */
+  value: string;
+  /** Unit name */
+  unit?: string;
+  /** Index/order for display */
+  index?: number;
+}
+
+/**
+ * Nutritional contents for a food item.
+ */
+export interface NutritionalContents {
+  calories: number;
+  carbohydrates?: number;
+  fat?: number;
+  protein?: number;
+  sodium?: number;
+  sugar?: number;
+  fiber?: number;
+  saturated_fat?: number;
+  cholesterol?: number;
+  potassium?: number;
+}
+
+/**
+ * A food search result item.
+ */
+export interface FoodSearchResult {
+  /** Food item ID in MFP database */
+  id: string;
+  /** Food name */
+  name: string;
+  /** Brand name (if applicable) */
+  brand?: string;
+  /** Nutritional contents for the default serving */
+  nutritional_contents: NutritionalContents;
+  /** Default serving size description */
+  serving_size?: string;
+  /** Whether this is a verified food item */
+  verified?: boolean;
+}
+
+/**
+ * Parameters for searching foods.
+ */
+export interface FoodSearchParams {
+  /** Search query string */
+  query: string;
+  /** Page number (1-indexed) */
+  page?: number;
+  /** Maximum results to return */
+  max_results?: number;
+}
+
+/**
+ * Response from food search.
+ */
+export interface FoodSearchResponse {
+  /** List of matching food items */
+  items: FoodSearchResult[];
+  /** Total number of results available */
+  total_results?: number;
+  /** Current page */
+  page: number;
+}
+
+/**
+ * Detailed food item with full nutrition and serving sizes.
+ */
+export interface FoodItemDetails {
+  /** Food item ID */
+  id: string;
+  /** Food name */
+  name: string;
+  /** Brand name */
+  brand?: string;
+  /** Nutritional contents for the default serving */
+  nutritional_contents: NutritionalContents;
+  /** Available serving sizes */
+  serving_sizes: ServingSize[];
+  /** Whether this is a verified food item */
+  verified?: boolean;
+}
+
+/**
+ * Parameters for adding a food item to the diary.
+ */
+export interface AddFoodParams {
+  /** Food item ID from search results */
+  food_id: string;
+  /** Meal slot to add to */
+  meal: MealSlot;
+  /** Quantity of servings */
+  quantity: number;
+  /** Serving size ID (uses default if not specified) */
+  serving_id?: string;
+  /** Date in YYYY-MM-DD format (defaults to today) */
+  date?: string;
+}
+
+/**
+ * Result of adding a food to the diary.
+ */
+export interface AddFoodResult {
+  /** Whether the operation was successful */
+  success: boolean;
+  /** Message describing the result */
+  message: string;
+  /** The date the food was added to */
+  date: string;
+  /** The meal slot */
+  meal: MealSlot;
+  /** Food name that was added */
+  food_name?: string;
+}
