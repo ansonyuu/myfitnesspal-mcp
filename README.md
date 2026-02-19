@@ -10,6 +10,9 @@ A Model Context Protocol (MCP) server that integrates with MyFitnessPal to retri
 | `get_nutrition_summary` | Get calories and macros summary for a date |
 | `get_goals` | Get your calorie and macro goals |
 | `quick_add_calories` | Add calories to a meal slot using Quick Add |
+| `search_food` | Search the MFP food database |
+| `get_food_details` | Get nutrition info and serving sizes for a food item |
+| `add_food` | Add a food item to your diary |
 
 ## Prerequisites
 
@@ -155,12 +158,65 @@ quick_add_calories(
 
 MyFitnessPal session cookies typically expire after about 30 days. If you get authentication errors, run the export-cookies script again to update your cookie.
 
+## Deploying to Cloudflare Workers (Remote MCP)
+
+The `worker/` directory contains a Cloudflare Workers deployment that exposes the MCP server over HTTP. This lets you use it as a remote MCP server from any client.
+
+### Prerequisites
+
+- A [Cloudflare account](https://dash.cloudflare.com/sign-up)
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) installed
+
+### Deploy
+
+```bash
+cd worker
+npm install
+npx wrangler login       # authenticate with Cloudflare (opens browser)
+npx wrangler deploy      # deploy the worker
+```
+
+### Set the session cookie secret
+
+```bash
+npx wrangler secret put MFP_SESSION_COOKIE
+```
+
+When prompted, paste your full cookie header string from the browser (the same value you'd put in `.env` for the local server).
+
+### Connect to Claude Desktop
+
+Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "myfitnesspal": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://myfitnesspal-mcp.<your-subdomain>.workers.dev/mcp"]
+    }
+  }
+}
+```
+
+Replace `<your-subdomain>` with your Cloudflare Workers subdomain, then restart Claude Desktop.
+
+### Updating the cookie
+
+Session cookies expire roughly every 30 days. To update:
+
+```bash
+cd worker
+npx wrangler secret put MFP_SESSION_COOKIE
+```
+
+Paste the new cookie value when prompted. No redeployment needed.
+
 ## Technical Notes
 
-- Uses web scraping since MyFitnessPal's API is private
+- Uses MFP's Next.js BFF proxy API (`/api/services/`, `/api/nutrition`)
 - Cookie-based authentication (session cookies from your browser)
 - Built with TypeScript and the MCP SDK
-- Uses Cheerio for HTML parsing
 
 ## License
 
