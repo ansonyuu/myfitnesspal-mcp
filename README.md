@@ -1,80 +1,61 @@
 # MyFitnessPal MCP Server
 
-A Model Context Protocol (MCP) server that integrates with MyFitnessPal to retrieve nutrition data and log calories.
+An MCP server that lets AI assistants read and log your MyFitnessPal nutrition data. Track calories, macros, search foods, and add meals — all through natural conversation.
 
-## Features
+## Tools
 
 | Tool | Description |
 |------|-------------|
 | `get_diary` | Get food diary entries for a specific date |
 | `get_nutrition_summary` | Get calories and macros summary for a date |
-| `get_goals` | Get your calorie and macro goals |
-| `quick_add_calories` | Add calories to a meal slot using Quick Add |
+| `get_goals` | Get your daily calorie and macro targets |
+| `quick_add_calories` | Quick-add calories (and optionally macros) to a meal |
 | `search_food` | Search the MFP food database |
 | `get_food_details` | Get nutrition info and serving sizes for a food item |
-| `add_food` | Add a food item to your diary |
+| `add_food` | Log a food item to your diary |
 
-## Prerequisites
+## Setup
 
-- Node.js 18+
-- A MyFitnessPal account
-- Active session in your browser
+### 1. Get your session cookie
 
-## Installation
+MyFitnessPal doesn't have a public API, so this server authenticates using your browser's session cookie.
 
-```bash
-npm install
-```
+1. Log into [MyFitnessPal](https://www.myfitnesspal.com) in your browser
+2. Open DevTools (`F12` or `Cmd+Option+I`)
+3. Go to **Application** → **Cookies** → `www.myfitnesspal.com`
+4. Copy the full cookie string (or use the helper script below)
 
-## Setup: Exporting Your Session Cookie
-
-Since MyFitnessPal doesn't have a public API, this server uses cookie-based authentication.
-
-### Option 1: Use the Helper Script
+**Or use the helper script:**
 
 ```bash
 npm run export-cookies
 ```
 
-Follow the interactive prompts to create your `.env` file.
+### 2. Configure environment
 
-### Option 2: Manual Setup
+```bash
+cp env.example .env
+```
 
-1. **Log into MyFitnessPal** in your browser
-2. **Open Developer Tools** (F12 or Cmd+Option+I on Mac)
-3. **Go to Application/Storage tab** → Cookies → www.myfitnesspal.com
-4. **Find the session cookie** (look for `mfp_session` or similar)
-5. **Copy the cookie value**
-6. **Create a `.env` file** in the project root:
+Fill in your values:
 
 ```env
 MFP_SESSION_COOKIE=your_session_cookie_value_here
 MFP_USERNAME=your_username
 ```
 
-## Usage
-
-### Building
+### 3. Build
 
 ```bash
+npm install
 npm run build
 ```
 
-### Running the Server
+## Usage
 
-```bash
-npm start
-```
+### Claude Code
 
-Or for development:
-
-```bash
-npm run dev
-```
-
-### Adding to Cursor
-
-Add this to your `.cursor/mcp.json`:
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -88,105 +69,53 @@ Add this to your `.cursor/mcp.json`:
 }
 ```
 
-Or for development with tsx:
+### Cursor
+
+Add to `.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "myfitnesspal": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["tsx", "/path/to/myfitnesspal-mcp/src/index.ts"]
+      "command": "node",
+      "args": ["/path/to/myfitnesspal-mcp/dist/index.js"]
     }
   }
 }
 ```
 
-## Tool Examples
+### Claude Desktop
 
-### Get Today's Diary
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
 
-```
-get_diary
-```
-
-Returns all meals with their food entries.
-
-### Get Diary for a Specific Date
-
-```
-get_diary(date: "2024-01-15")
-```
-
-### Get Nutrition Summary
-
-```
-get_nutrition_summary(date: "2024-01-15")
+```json
+{
+  "mcpServers": {
+    "myfitnesspal": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/path/to/myfitnesspal-mcp/dist/index.js"]
+    }
+  }
+}
 ```
 
-Returns calories and macros consumed vs goals.
+Replace `/path/to/myfitnesspal-mcp` with the actual path to this repo.
 
-### Get Your Goals
+## Remote Deployment (Cloudflare Workers)
 
-```
-get_goals
-```
-
-Returns your daily calorie and macro targets.
-
-### Quick Add Calories
-
-```
-quick_add_calories(meal: "Lunch", calories: 500)
-```
-
-Adds 500 calories to your lunch.
-
-### Quick Add with Macros
-
-```
-quick_add_calories(
-  meal: "Dinner",
-  calories: 800,
-  carbs: 60,
-  fat: 30,
-  protein: 40
-)
-```
-
-## Session Expiration
-
-MyFitnessPal session cookies typically expire after about 30 days. If you get authentication errors, run the export-cookies script again to update your cookie.
-
-## Deploying to Cloudflare Workers (Remote MCP)
-
-The `worker/` directory contains a Cloudflare Workers deployment that exposes the MCP server over HTTP. This lets you use it as a remote MCP server from any client.
-
-### Prerequisites
-
-- A [Cloudflare account](https://dash.cloudflare.com/sign-up)
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) installed
-
-### Deploy
+The `worker/` directory contains a Cloudflare Workers deployment for using this as a remote MCP server.
 
 ```bash
 cd worker
 npm install
-npx wrangler login       # authenticate with Cloudflare (opens browser)
-npx wrangler deploy      # deploy the worker
+npx wrangler login
+npx wrangler deploy
+npx wrangler secret put MFP_SESSION_COOKIE   # paste your cookie when prompted
 ```
 
-### Set the session cookie secret
-
-```bash
-npx wrangler secret put MFP_SESSION_COOKIE
-```
-
-When prompted, paste your full cookie header string from the browser (the same value you'd put in `.env` for the local server).
-
-### Connect to Claude Desktop
-
-Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Then connect from Claude Desktop:
 
 ```json
 {
@@ -199,24 +128,9 @@ Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-Replace `<your-subdomain>` with your Cloudflare Workers subdomain, then restart Claude Desktop.
+## Session Expiration
 
-### Updating the cookie
-
-Session cookies expire roughly every 30 days. To update:
-
-```bash
-cd worker
-npx wrangler secret put MFP_SESSION_COOKIE
-```
-
-Paste the new cookie value when prompted. No redeployment needed.
-
-## Technical Notes
-
-- Uses MFP's Next.js BFF proxy API (`/api/services/`, `/api/nutrition`)
-- Cookie-based authentication (session cookies from your browser)
-- Built with TypeScript and the MCP SDK
+MFP session cookies expire roughly every 30 days. If you get auth errors, grab a fresh cookie from your browser and update your `.env` (or run `npx wrangler secret put MFP_SESSION_COOKIE` for the worker).
 
 ## License
 
@@ -224,7 +138,4 @@ MIT
 
 ## Disclaimer
 
-This is an unofficial integration for personal use. Please respect MyFitnessPal's Terms of Service.
-
-
-
+Unofficial integration for personal use. Please respect MyFitnessPal's Terms of Service.
