@@ -3,6 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2025-03-10"
 compatibility_flags = ["nodejs_compat"]
 
+[[kv_namespaces]]
+binding = "MFP_CACHE"
+id = "98322196ca194ba7ad9c11bc19a95cfa"
+
 [vars]
 # Non-sensitive environment variables go here
 # MFP_USERNAME = "your-username"

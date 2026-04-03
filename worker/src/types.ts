@@ -10,6 +10,8 @@ export interface Env {
   MFP_SESSION_COOKIE: string;
   /** Optional: MyFitnessPal username */
   MFP_USERNAME?: string;
+  /** KV namespace for caching auth tokens and goals */
+  MFP_CACHE?: KVNamespace;
 }
 
 /**

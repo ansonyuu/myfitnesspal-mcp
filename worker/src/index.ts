@@ -292,6 +292,49 @@ Other:
     }
   );
 
+  // Register log_foods tool — batch search + add in one request
+  server.tool(
+    'log_foods',
+    'Log multiple food items at once. Searches for each item, picks the top result, and adds them all to your diary. Much more efficient than calling search_food + add_food for each item individually. Use this when the user wants to log several foods.',
+    {
+      items: z.array(z.object({
+        name: z.string().describe('Food name to search for (e.g., "banana", "chicken breast")'),
+        quantity: z.number().positive().optional().describe('Number of servings (default: 1)'),
+      })).min(1).describe('List of food items to log'),
+      meal: MealSlotSchema,
+      date: DateSchema,
+    },
+    async ({ items, meal, date }) => {
+      try {
+        const results = await client.logFoods(items, meal as MealSlot, date);
+
+        const lines: string[] = [];
+        let totalCals = 0;
+        let successCount = 0;
+
+        for (const r of results) {
+          if (r.success) {
+            lines.push(`  + ${r.message}`);
+            totalCals += r.calories ?? 0;
+            successCount++;
+          } else {
+            lines.push(`  x ${r.name}: ${r.message}`);
+          }
+        }
+
+        const header = `Logged ${successCount}/${results.length} items to ${meal} (${totalCals} cal total)`;
+        return {
+          content: [{ type: 'text' as const, text: [header, ...lines].join('\n') }],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+        };
+      }
+    }
+  );
+
   // Register add_food tool
   server.tool(
     'add_food',

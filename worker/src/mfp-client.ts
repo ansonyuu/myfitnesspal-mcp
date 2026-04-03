@@ -1,12 +1,12 @@
 /**
- * MyFitnessPal HTTP client for Cloudflare Workers using the BFF proxy API.
+ * MyFitnessPal HTTP client for Cloudflare Workers.
  *
  * @remarks
- * MFP migrated from Rails to Next.js. All API access now goes through
- * the BFF (Backend for Frontend) proxy at /api/services/ which handles
- * Bearer token injection server-side. Only session cookies are needed.
+ * MFP's /api/services/ proxy requires an explicit Authorization header.
+ * We obtain the access token by calling /api/auth/session with the session
+ * cookie, then pass it as a Bearer token on all subsequent API calls.
  *
- * Food search uses a separate endpoint at /api/nutrition.
+ * Food search uses a separate endpoint at /api/nutrition (cookie-only).
  */
 
 import type {
@@ -45,12 +45,15 @@ const MEAL_INDEX_TO_NAME: Record<number, MealSlot> = {
  */
 export class MFPClient {
   private sessionCookie: string;
+  private accessToken: string | null = null;
+  private cache: KVNamespace | null;
 
   constructor(env: Env) {
     if (!env.MFP_SESSION_COOKIE) {
       throw new Error('MFP_SESSION_COOKIE secret is not configured');
     }
     this.sessionCookie = env.MFP_SESSION_COOKIE;
+    this.cache = env.MFP_CACHE ?? null;
   }
 
   private formatDate(date?: Date | string): string {
@@ -60,15 +63,79 @@ export class MFPClient {
   }
 
   private getCookieHeader(): string {
-    return this.sessionCookie.includes('=')
-      ? this.sessionCookie
-      : `_mfp_session=${this.sessionCookie}`;
+    // If it's already a full cookie header string (e.g. "key=val; key2=val2"), use as-is
+    if (this.sessionCookie.includes('; ') && this.sessionCookie.includes('=')) {
+      return this.sessionCookie;
+    }
+    // If it's a single key=value pair, use as-is
+    if (this.sessionCookie.includes('=')) {
+      return this.sessionCookie;
+    }
+    // Raw token value — MFP uses NextAuth, so the session cookie name is:
+    return `__Secure-next-auth.session-token=${this.sessionCookie}`;
+  }
+
+  private static readonly TOKEN_CACHE_KEY = 'mfp:access_token';
+  private static readonly TOKEN_TTL = 3300; // 55 minutes (tokens typically last 1h)
+
+  /**
+   * Fetches the Bearer access token, using KV cache to avoid re-fetching
+   * on every Worker invocation.
+   */
+  private async fetchAccessToken(): Promise<string> {
+    if (this.accessToken) return this.accessToken;
+
+    // Try KV cache first
+    if (this.cache) {
+      const cached = await this.cache.get(MFPClient.TOKEN_CACHE_KEY);
+      if (cached) {
+        this.accessToken = cached;
+        return cached;
+      }
+    }
+
+    const resp = await fetch(`${MFP_BASE_URL}/user/auth_token`, {
+      headers: {
+        'Cookie': this.getCookieHeader(),
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Referer': 'https://www.myfitnesspal.com/',
+      },
+    });
+
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to fetch access token: ${resp.status} ${resp.statusText}. ` +
+        `Session cookie may be expired — re-copy from browser DevTools.`
+      );
+    }
+
+    const data = await resp.json() as any;
+    const token = data?.access_token;
+
+    if (!token) {
+      throw new Error(
+        `No access_token in /user/auth_token response. ` +
+        `Session cookie may be expired — re-copy from browser DevTools.`
+      );
+    }
+
+    this.accessToken = token;
+
+    // Cache in KV for subsequent Worker invocations
+    if (this.cache) {
+      await this.cache.put(MFPClient.TOKEN_CACHE_KEY, token, { expirationTtl: MFPClient.TOKEN_TTL });
+    }
+
+    return token;
   }
 
   private async apiGet(path: string): Promise<Response> {
+    const token = await this.fetchAccessToken();
     return fetch(`${MFP_BASE_URL}${path}`, {
       headers: {
         'Cookie': this.getCookieHeader(),
+        'Authorization': `Bearer ${token}`,
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         'Accept': 'application/json',
         'Referer': 'https://www.myfitnesspal.com/',
@@ -77,10 +144,12 @@ export class MFPClient {
   }
 
   private async apiPost(path: string, body: any): Promise<Response> {
+    const token = await this.fetchAccessToken();
     return fetch(`${MFP_BASE_URL}${path}`, {
       method: 'POST',
       headers: {
         'Cookie': this.getCookieHeader(),
+        'Authorization': `Bearer ${token}`,
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         'Accept': 'application/json',
         'Content-Type': 'application/json',
@@ -223,19 +292,49 @@ export class MFPClient {
     };
   }
 
+  private static readonly GOALS_CACHE_KEY = 'mfp:goals';
+  private static readonly GOALS_TTL = 86400; // 24 hours — goals rarely change
+  private static readonly GOALS_PATH_KEY = 'mfp:goals_path';
+  private static readonly GOALS_PATH_TTL = 604800; // 7 days
+
   async getGoals(): Promise<NutritionGoals> {
-    const paths = [
+    // Try KV cache first
+    if (this.cache) {
+      const cached = await this.cache.get(MFPClient.GOALS_CACHE_KEY);
+      if (cached) {
+        return JSON.parse(cached) as NutritionGoals;
+      }
+    }
+
+    const allPaths = [
       '/api/services/goals',
       '/api/services/me/goals',
       '/api/services/nutrition-goals',
     ];
+
+    // Try the known-working path first if we have one cached
+    let paths = allPaths;
+    if (this.cache) {
+      const knownPath = await this.cache.get(MFPClient.GOALS_PATH_KEY);
+      if (knownPath) {
+        paths = [knownPath, ...allPaths.filter(p => p !== knownPath)];
+      }
+    }
 
     for (const path of paths) {
       try {
         const resp = await this.apiGet(path);
         if (resp.ok) {
           const data = await resp.json() as any;
-          return this.parseGoalsResponse(data);
+          const goals = this.parseGoalsResponse(data);
+
+          // Cache goals and the working path
+          if (this.cache) {
+            await this.cache.put(MFPClient.GOALS_CACHE_KEY, JSON.stringify(goals), { expirationTtl: MFPClient.GOALS_TTL });
+            await this.cache.put(MFPClient.GOALS_PATH_KEY, path, { expirationTtl: MFPClient.GOALS_PATH_TTL });
+          }
+
+          return goals;
         }
       } catch {
         continue;
@@ -443,6 +542,66 @@ export class MFPClient {
       meal: params.meal,
       calories: params.calories,
     };
+  }
+
+  /**
+   * Batch: search + add multiple foods in a single Worker invocation.
+   * Each item is searched, the top result is picked, and added to the diary.
+   */
+  async logFoods(items: Array<{ name: string; quantity?: number }>, meal: MealSlot, date?: string): Promise<Array<{ name: string; success: boolean; message: string; calories?: number }>> {
+    const dateStr = this.formatDate(date);
+    const results: Array<{ name: string; success: boolean; message: string; calories?: number }> = [];
+
+    for (const item of items) {
+      try {
+        // Search for the food
+        const searchResults = await this.searchFood({ query: item.name, max_results: 1 });
+        if (searchResults.items.length === 0) {
+          results.push({ name: item.name, success: false, message: 'No matching food found' });
+          continue;
+        }
+
+        const topResult = searchResults.items[0];
+        const qty = item.quantity ?? 1;
+
+        // Get details for serving info
+        const details = await this.getFoodDetails(topResult.id);
+        const nc = details.nutritional_contents;
+        const scale = qty;
+
+        const nutritional_contents: any = {
+          energy: { value: Math.round(nc.calories * scale), unit: 'calories' },
+        };
+        if (nc.carbohydrates !== undefined) nutritional_contents.carbohydrates = Math.round(nc.carbohydrates * scale * 10) / 10;
+        if (nc.fat !== undefined) nutritional_contents.fat = Math.round(nc.fat * scale * 10) / 10;
+        if (nc.protein !== undefined) nutritional_contents.protein = Math.round(nc.protein * scale * 10) / 10;
+        if (nc.sodium !== undefined) nutritional_contents.sodium = Math.round(nc.sodium * scale * 10) / 10;
+        if (nc.sugar !== undefined) nutritional_contents.sugar = Math.round(nc.sugar * scale * 10) / 10;
+        if (nc.fiber !== undefined) nutritional_contents.fiber = Math.round(nc.fiber * scale * 10) / 10;
+
+        const resp = await this.apiPost('/api/services/diary', {
+          items: [{
+            type: 'quick_add',
+            date: dateStr,
+            meal_name: meal,
+            nutritional_contents,
+          }],
+        });
+
+        if (resp.ok || resp.status === 201) {
+          const cals = Math.round(nc.calories * scale);
+          results.push({ name: details.name, success: true, message: `Added ${details.name} (${cals} cal)`, calories: cals });
+        } else {
+          const text = await resp.text();
+          results.push({ name: item.name, success: false, message: `Failed: ${resp.status} ${text.slice(0, 100)}` });
+        }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : 'Unknown error';
+        results.push({ name: item.name, success: false, message: msg });
+      }
+    }
+
+    return results;
   }
 
   async addFood(params: AddFoodParams): Promise<AddFoodResult> {
