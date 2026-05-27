@@ -50,6 +50,8 @@ async function main(): Promise<void> {
         'Cookie': cookieHeader,
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
         'Accept': 'application/json',
+        // /api/nutrition returns 404 without a same-origin Referer; the real client sends this too.
+        'Referer': 'https://www.myfitnesspal.com/',
       },
     });
     console.log(`   Response: ${response.status} ${response.statusText}`);

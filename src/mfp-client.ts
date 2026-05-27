@@ -14,6 +14,8 @@ import type {
   AddFoodParams,
   AddFoodResult,
   DayDiary,
+  DeleteResult,
+  EditFoodParams,
   FoodEntry,
   FoodItemDetails,
   FoodSearchParams,
@@ -40,6 +42,14 @@ const MEAL_INDEX_TO_NAME: Record<number, MealSlot> = {
   3: 'Snacks',
 };
 
+/** Map meal name to its diary position (used when writing entries) */
+const MEAL_NAME_TO_POSITION: Record<MealSlot, number> = {
+  Breakfast: 0,
+  Lunch: 1,
+  Dinner: 2,
+  Snacks: 3,
+};
+
 /**
  * Client for interacting with MyFitnessPal via the BFF proxy.
  */
@@ -51,45 +61,61 @@ export class MFPClient {
   }
 
   /**
-   * Formats a date to YYYY-MM-DD format.
+   * Formats a date to YYYY-MM-DD format using the LOCAL date.
+   *
+   * @remarks
+   * Uses local calendar parts rather than toISOString() (UTC), which would
+   * roll an evening entry into the next day for users behind UTC.
    */
   private formatDate(date?: Date | string): string {
     if (typeof date === 'string') return date;
     const d = date ?? new Date();
-    return d.toISOString().split('T')[0];
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  /**
+   * Common headers for authenticated requests to the MFP BFF proxy.
+   *
+   * @remarks
+   * The `mfp-client-id` header identifies the web client; several diary
+   * endpoints (e.g. /api/nutrition search, read_diary) require it.
+   */
+  private async authHeaders(): Promise<Record<string, string>> {
+    return {
+      'Cookie': await this.auth.getCookieHeader(),
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept': 'application/json',
+      'Referer': 'https://www.myfitnesspal.com/',
+      'mfp-client-id': 'mfp-main-js',
+    };
   }
 
   /**
    * Makes an authenticated GET request to the MFP BFF proxy.
    */
   private async apiGet(path: string): Promise<Response> {
-    const cookieHeader = await this.auth.getCookieHeader();
-    return fetch(`${MFP_BASE_URL}${path}`, {
-      headers: {
-        'Cookie': cookieHeader,
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Referer': 'https://www.myfitnesspal.com/',
-      },
-    });
+    return fetch(`${MFP_BASE_URL}${path}`, { headers: await this.authHeaders() });
   }
 
   /**
    * Makes an authenticated POST request to the MFP BFF proxy.
    */
   private async apiPost(path: string, body: any): Promise<Response> {
-    const cookieHeader = await this.auth.getCookieHeader();
     return fetch(`${MFP_BASE_URL}${path}`, {
       method: 'POST',
-      headers: {
-        'Cookie': cookieHeader,
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Referer': 'https://www.myfitnesspal.com/',
-      },
+      headers: { ...(await this.authHeaders()), 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
+  }
+
+  /**
+   * Makes an authenticated DELETE request to the MFP BFF proxy.
+   */
+  private async apiDelete(path: string): Promise<Response> {
+    return fetch(`${MFP_BASE_URL}${path}`, { method: 'DELETE', headers: await this.authHeaders() });
   }
 
   /**
@@ -116,7 +142,11 @@ export class MFPClient {
    */
   async getDiary(date?: Date | string): Promise<DayDiary> {
     const dateStr = this.formatDate(date);
-    const resp = await this.apiGet(`/api/services/diary?entry_date=${dateStr}`);
+    // read_diary returns INDIVIDUAL entries (with ids + food names), unlike
+    // /api/services/diary which only returns per-meal aggregate totals.
+    const resp = await this.apiGet(
+      `/api/services/diary/read_diary?entry_date=${dateStr}&fields=all&types=food_entry,exercise_entry,steps_aggregate&username=`
+    );
 
     if (!resp.ok) {
       const text = await resp.text();
@@ -131,7 +161,7 @@ export class MFPClient {
   }
 
   /**
-   * Parses the BFF proxy diary response into our DayDiary format.
+   * Parses the read_diary response (individual entries) into our DayDiary format.
    */
   private parseDiaryResponse(data: any, dateStr: string): DayDiary {
     const mealNames: MealSlot[] = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'];
@@ -145,11 +175,13 @@ export class MFPClient {
       mealMap.set(name, { entries: [], cal: 0, carbs: 0, fat: 0, protein: 0, sodium: 0, sugar: 0 });
     }
 
-    // The response could be an array of entries or an object with a wrapper
-    const entries = Array.isArray(data) ? data : (data?.items ?? data?.diary_entries ?? data?.entries ?? []);
+    // read_diary returns an array (or object-of-entries) of typed items
+    const entries = Array.isArray(data) ? data : (data?.items ?? Object.values(data ?? {}));
 
     for (const entry of entries) {
-      const mealName = entry.meal_name ?? MEAL_INDEX_TO_NAME[entry.meal_index] ?? 'Snacks';
+      if (entry?.type !== 'food_entry') continue;
+
+      const mealName = (entry.meal_name as MealSlot) ?? MEAL_INDEX_TO_NAME[entry.meal_position] ?? 'Snacks';
       const meal = mealMap.get(mealName) ?? mealMap.get('Snacks')!;
 
       const nc = entry.nutritional_contents ?? entry.nutrition ?? {};
@@ -160,14 +192,20 @@ export class MFPClient {
       const sodium = nc.sodium ?? 0;
       const sugar = nc.sugar ?? 0;
 
+      const ss = entry.serving_size;
+      const servingDesc = ss ? `${ss.value} ${ss.unit}`.trim() : undefined;
+
       const foodEntry: FoodEntry = {
-        name: entry.food?.description ?? entry.food_name ?? entry.description ?? entry.type ?? 'Quick Add',
+        id: entry.id,
+        name: entry.food?.description ?? entry.food?.brand_name ?? entry.description ?? 'Quick Add',
+        servings: entry.servings,
         calories,
         carbs,
         fat,
         protein,
         sodium,
         sugar,
+        servingSize: servingDesc,
       };
 
       meal.entries.push(foodEntry);
@@ -254,43 +292,41 @@ export class MFPClient {
    * @returns The user's configured nutrition goals
    */
   async getGoals(): Promise<NutritionGoals> {
-    // Try known goals endpoints on the BFF proxy
-    const paths = [
-      '/api/services/goals',
-      '/api/services/me/goals',
-      '/api/services/nutrition-goals',
-    ];
+    const dateStr = this.formatDate();
+    const resp = await this.apiGet(`/api/services/diary/nutrient_goals?date=${dateStr}`);
 
-    for (const path of paths) {
-      try {
-        const resp = await this.apiGet(path);
-        if (resp.ok) {
-          const data = await resp.json() as any;
-          return this.parseGoalsResponse(data);
-        }
-      } catch {
-        continue;
+    if (!resp.ok) {
+      const text = await resp.text();
+      if (resp.status === 401 || resp.status === 403) {
+        throw new Error('Session expired. Please update your MFP_SESSION_COOKIE.');
       }
+      throw new Error(`Could not fetch nutrition goals: ${resp.status} ${resp.statusText}\n${text.slice(0, 300)}`);
     }
 
-    throw new Error(
-      'Could not fetch nutrition goals. The goals endpoint may not be available through the BFF proxy.'
-    );
+    const data = await resp.json() as any;
+    return this.parseGoalsResponse(data, dateStr);
   }
 
   /**
-   * Parses the goals API response.
+   * Parses the nutrient_goals API response.
+   *
+   * @remarks
+   * The response carries a `daily_goals` array keyed by day_of_week (goals
+   * can differ per day); we select the goal for the requested date.
    */
-  private parseGoalsResponse(data: any): NutritionGoals {
-    const goals = data?.goals ?? data?.item ?? data ?? {};
-    const nc = goals.nutritional_contents ?? goals.default_goal ?? goals ?? {};
+  private parseGoalsResponse(data: any, dateStr: string): NutritionGoals {
+    const daily = Array.isArray(data?.daily_goals) ? data.daily_goals : [];
+    const weekday = new Date(`${dateStr}T00:00:00`)
+      .toLocaleDateString('en-US', { weekday: 'long' })
+      .toLowerCase();
+    const goals = daily.find((g: any) => g.day_of_week === weekday) ?? daily[0] ?? data ?? {};
 
-    const calories = nc.energy?.value ?? nc.calories ?? goals.calories ?? 0;
-    const carbs = nc.carbohydrates ?? nc.carbs ?? goals.carbs ?? 0;
-    const fat = nc.fat ?? goals.fat ?? 0;
-    const protein = nc.protein ?? goals.protein ?? 0;
-    const sodium = nc.sodium ?? goals.sodium ?? 0;
-    const sugar = nc.sugar ?? goals.sugar ?? 0;
+    const calories = goals.energy?.value ?? goals.calories ?? 0;
+    const carbs = goals.carbohydrates ?? goals.carbs ?? 0;
+    const fat = goals.fat ?? 0;
+    const protein = goals.protein ?? 0;
+    const sodium = goals.sodium ?? 0;
+    const sugar = goals.sugar ?? 0;
 
     const carbsCal = carbs * 4;
     const fatCal = fat * 9;
@@ -335,7 +371,10 @@ export class MFPClient {
     }
 
     const data = await resp.json();
-    return this.parseFoodSearchResponse(data, page);
+    const parsed = this.parseFoodSearchResponse(data, page);
+    // MFP ignores per_page and returns ~100 rows; cap to the requested count
+    // (total_results still reflects the full match count for the caller).
+    return { ...parsed, items: parsed.items.slice(0, maxResults) };
   }
 
   /**
@@ -453,6 +492,7 @@ export class MFPClient {
 
     return {
       id,
+      version: food.version !== undefined ? String(food.version) : undefined,
       name,
       brand: food.brand_name ?? food.brand ?? undefined,
       nutritional_contents: this.parseNutritionalContents(nc),
@@ -512,78 +552,164 @@ export class MFPClient {
   }
 
   /**
-   * Adds a food item to the diary.
+   * Posts a single named food_entry to the diary.
    *
-   * @remarks
-   * The BFF proxy doesn't support the food_entry type directly, so this
-   * fetches the food's nutrition info and creates a quick_add entry with
-   * the scaled nutritional values. The entry will appear as "Quick Add"
-   * in the MFP diary rather than showing the food name.
+   * @returns The created entry object (includes its `id`).
+   * @throws If the request fails (session expired or validation error).
+   */
+  private async postFoodEntry(opts: {
+    date: string;
+    foodId: string;
+    version?: string;
+    mealPosition: number;
+    servings: number;
+    serving: { nutrition_multiplier: number; unit?: string; value: number | string };
+  }): Promise<any> {
+    const entry = {
+      type: 'food_entry',
+      date: opts.date,
+      food: { id: opts.foodId, version: opts.version },
+      servings: opts.servings,
+      meal_position: opts.mealPosition,
+      serving_size: {
+        nutrition_multiplier: opts.serving.nutrition_multiplier,
+        unit: opts.serving.unit,
+        value: Number(opts.serving.value),
+      },
+    };
+
+    const resp = await this.apiPost('/api/services/diary', { items: [entry] });
+
+    if (!resp.ok && resp.status !== 201) {
+      const text = await resp.text();
+      if (resp.status === 401 || resp.status === 403) {
+        throw new Error('Session expired. Please update your MFP_SESSION_COOKIE.');
+      }
+      throw new Error(`Failed to log food entry: ${resp.status} ${resp.statusText}\n${text.slice(0, 300)}`);
+    }
+
+    const data = await resp.json() as any;
+    return Array.isArray(data) ? data[0] : (data?.items?.[0] ?? data);
+  }
+
+  /**
+   * Adds a food item to the diary as a named food_entry.
    *
    * @param params - The add food parameters
-   * @returns Result of the add operation
+   * @returns Result of the add operation (includes the new entry id)
    */
   async addFood(params: AddFoodParams): Promise<AddFoodResult> {
     const dateStr = params.date ?? this.formatDate();
-
-    // Fetch food details to get nutrition info
     const details = await this.getFoodDetails(params.food_id);
 
-    // Find the serving size multiplier
-    let multiplier = 1;
-    if (params.serving_id && details.serving_sizes.length > 0) {
-      const serving = details.serving_sizes.find(s => s.id === params.serving_id);
-      if (serving) {
-        multiplier = serving.nutrition_multiplier;
-      }
+    if (details.serving_sizes.length === 0) {
+      throw new Error(`No serving sizes available for food ${params.food_id}.`);
     }
 
-    // Scale nutrition by multiplier and quantity
-    const scale = multiplier * params.quantity;
-    const nc = details.nutritional_contents;
+    // Default to the first serving; select by serving_id when provided.
+    let serving = details.serving_sizes[0];
+    if (params.serving_id) {
+      const found = details.serving_sizes.find(s => s.id === params.serving_id);
+      if (found) serving = found;
+    }
 
-    const nutritional_contents: any = {
-      energy: { value: Math.round(nc.calories * scale), unit: 'calories' },
-    };
-    if (nc.carbohydrates !== undefined) nutritional_contents.carbohydrates = Math.round(nc.carbohydrates * scale * 10) / 10;
-    if (nc.fat !== undefined) nutritional_contents.fat = Math.round(nc.fat * scale * 10) / 10;
-    if (nc.protein !== undefined) nutritional_contents.protein = Math.round(nc.protein * scale * 10) / 10;
-    if (nc.sodium !== undefined) nutritional_contents.sodium = Math.round(nc.sodium * scale * 10) / 10;
-    if (nc.sugar !== undefined) nutritional_contents.sugar = Math.round(nc.sugar * scale * 10) / 10;
-    if (nc.fiber !== undefined) nutritional_contents.fiber = Math.round(nc.fiber * scale * 10) / 10;
-
-    const resp = await this.apiPost('/api/services/diary', {
-      items: [{
-        type: 'quick_add',
-        date: dateStr,
-        meal_name: params.meal,
-        nutritional_contents,
-      }],
+    const created = await this.postFoodEntry({
+      date: dateStr,
+      foodId: params.food_id,
+      version: details.version,
+      mealPosition: MEAL_NAME_TO_POSITION[params.meal],
+      servings: params.quantity,
+      serving: { nutrition_multiplier: serving.nutrition_multiplier, unit: serving.unit, value: serving.value },
     });
 
-    if (resp.ok || resp.status === 201) {
-      const foodName = details.name;
-      const cals = Math.round(nc.calories * scale);
-      return {
-        success: true,
-        message: `Added ${foodName} (${cals} cal) to ${params.meal} on ${dateStr}`,
-        date: dateStr,
-        meal: params.meal,
-        food_name: foodName,
-      };
+    const cals = created?.nutritional_contents?.energy?.value;
+    return {
+      success: true,
+      message: `Added ${details.name}${cals !== undefined ? ` (${Math.round(cals)} cal)` : ''} to ${params.meal} on ${dateStr}`,
+      date: dateStr,
+      meal: params.meal,
+      food_name: details.name,
+      entry_id: created?.id,
+    };
+  }
+
+  /**
+   * Deletes a diary entry by its id.
+   *
+   * @param entryId - The diary entry id (from get_diary)
+   */
+  async deleteEntry(entryId: string): Promise<DeleteResult> {
+    const resp = await this.apiDelete(`/api/services/diary/${entryId}`);
+
+    if (resp.status === 204 || resp.ok) {
+      return { success: true, message: `Deleted entry ${entryId}.` };
     }
-
-    const text = await resp.text();
-
     if (resp.status === 401 || resp.status === 403) {
       throw new Error('Session expired. Please update your MFP_SESSION_COOKIE.');
     }
+    if (resp.status === 404) {
+      return { success: false, message: `Entry ${entryId} not found (already deleted?).` };
+    }
+    const text = await resp.text();
+    throw new Error(`Failed to delete entry: ${resp.status} ${resp.statusText}\n${text.slice(0, 200)}`);
+  }
 
+  /**
+   * Edits an existing diary entry's servings and/or meal.
+   *
+   * @remarks
+   * Implemented as recreate-then-delete (MFP's PUT endpoint is unreliable).
+   * The new entry is created first so a failure never loses the original.
+   *
+   * @param params - Which entry to edit and the new servings/meal
+   * @returns Result describing the updated entry (with the new entry id)
+   */
+  async editEntry(params: EditFoodParams): Promise<AddFoodResult> {
+    const resp = await this.apiGet(
+      `/api/services/diary/read_diary?entry_date=${params.date}&fields=all&types=food_entry&username=`
+    );
+    if (!resp.ok) {
+      if (resp.status === 401 || resp.status === 403) {
+        throw new Error('Session expired. Please update your MFP_SESSION_COOKIE.');
+      }
+      throw new Error(`Failed to read diary for ${params.date}: ${resp.status} ${resp.statusText}`);
+    }
+
+    const data = await resp.json() as any;
+    const items = Array.isArray(data) ? data : (data?.items ?? Object.values(data ?? {}));
+    const entry = items.find((e: any) => e.id === params.entry_id && e.type === 'food_entry');
+    if (!entry) {
+      throw new Error(`Entry ${params.entry_id} not found on ${params.date}.`);
+    }
+    if (!entry.food?.id) {
+      throw new Error(`Entry ${params.entry_id} has no food reference and can't be edited; delete and re-add instead.`);
+    }
+
+    const newServings = params.servings ?? entry.servings ?? 1;
+    const newMeal: MealSlot =
+      params.meal ?? (entry.meal_name as MealSlot) ?? MEAL_INDEX_TO_NAME[entry.meal_position] ?? 'Snacks';
+    const ss = entry.serving_size ?? {};
+
+    // Recreate first (so the original is never lost on failure), then delete the old.
+    const created = await this.postFoodEntry({
+      date: params.date,
+      foodId: entry.food.id,
+      version: entry.food.version,
+      mealPosition: MEAL_NAME_TO_POSITION[newMeal],
+      servings: newServings,
+      serving: { nutrition_multiplier: ss.nutrition_multiplier ?? 1, unit: ss.unit, value: ss.value ?? 1 },
+    });
+    await this.deleteEntry(params.entry_id);
+
+    const cals = created?.nutritional_contents?.energy?.value;
+    const foodName = entry.food?.description ?? 'Food';
     return {
-      success: false,
-      message: `Failed to add food: ${resp.status} ${text.slice(0, 300)}`,
-      date: dateStr,
-      meal: params.meal,
+      success: true,
+      message: `Updated ${foodName} → ${newServings} serving(s) in ${newMeal} on ${params.date}${cals !== undefined ? ` (${Math.round(cals)} cal)` : ''}`,
+      date: params.date,
+      meal: newMeal,
+      food_name: foodName,
+      entry_id: created?.id,
     };
   }
 }

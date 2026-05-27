@@ -6,13 +6,15 @@ An MCP server that lets AI assistants read and log your MyFitnessPal nutrition d
 
 | Tool | Description |
 |------|-------------|
-| `get_diary` | Get food diary entries for a specific date |
+| `get_diary` | Get the individual diary entries for a date (each with its entry `id`, grouped by meal) |
 | `get_nutrition_summary` | Get calories and macros summary for a date |
 | `get_goals` | Get your daily calorie and macro targets |
-| `quick_add_calories` | Quick-add calories (and optionally macros) to a meal |
 | `search_food` | Search the MFP food database |
 | `get_food_details` | Get nutrition info and serving sizes for a food item |
-| `add_food` | Log a food item to your diary |
+| `add_food` | Log a food item to your diary as a named entry |
+| `edit_entry` | Change an existing entry's servings and/or meal |
+| `delete_diary_entry` | Delete a diary entry by its `id` |
+| `quick_add_calories` | Quick-add bare calories (and optionally macros) to a meal |
 
 ## Setup
 
