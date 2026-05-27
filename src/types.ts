@@ -9,8 +9,12 @@
  * Represents a single food entry in a meal.
  */
 export interface FoodEntry {
+  /** Diary entry ID (used to edit or delete this entry) */
+  id?: string;
   /** Name of the food item */
   name: string;
+  /** Number of servings logged */
+  servings?: number;
   /** Calories in this entry */
   calories: number;
   /** Carbohydrates in grams */
@@ -248,6 +252,8 @@ export interface FoodSearchResponse {
 export interface FoodItemDetails {
   /** Food item ID */
   id: string;
+  /** Food version ID (required when logging the food to the diary) */
+  version?: string;
   /** Food name */
   name: string;
   /** Brand name */
@@ -290,5 +296,32 @@ export interface AddFoodResult {
   meal: MealSlot;
   /** Food name that was added */
   food_name?: string;
+  /** Diary entry ID of the created entry (used to edit or delete it) */
+  entry_id?: string;
+}
+
+/**
+ * Parameters for editing an existing diary entry. Implemented as a
+ * delete-then-recreate because MFP's PUT endpoint is unreliable.
+ */
+export interface EditFoodParams {
+  /** Date of the entry in YYYY-MM-DD format */
+  date: string;
+  /** The diary entry ID to edit (from get_diary) */
+  entry_id: string;
+  /** New number of servings (optional; keeps current if omitted) */
+  servings?: number;
+  /** New meal slot (optional; keeps current if omitted) */
+  meal?: MealSlot;
+}
+
+/**
+ * Result of deleting a diary entry.
+ */
+export interface DeleteResult {
+  /** Whether the deletion succeeded */
+  success: boolean;
+  /** Message describing the result */
+  message: string;
 }
 

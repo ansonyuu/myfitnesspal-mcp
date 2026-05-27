@@ -4,10 +4,13 @@
  *
  * @remarks
  * Provides tools for interacting with MyFitnessPal:
- * - get_diary: Retrieve food diary entries for a specific date
+ * - search_food / get_food_details: Look up foods and serving sizes
+ * - get_diary: Retrieve individual diary entries (with ids) for a date
  * - get_nutrition_summary: Get calories and macros summary for a date
  * - get_goals: Get your calorie and macro goals
- * - quick_add_calories: Add calories to a meal slot using Quick Add
+ * - add_food: Log a named food entry to a meal
+ * - edit_entry / delete_diary_entry: Modify or remove a diary entry
+ * - quick_add_calories: Add bare calories to a meal slot
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -43,7 +46,7 @@ async function main(): Promise<void> {
   // Register the get_diary tool
   server.tool(
     'get_diary',
-    'Get food diary entries for a specific date. Returns all meals with their food entries and calorie/macro totals.',
+    'Get food diary entries for a specific date. Returns each meal with its individual food entries (each has an `id` for edit/delete) and calorie/macro totals.',
     {
       date: DateSchema,
     },
@@ -361,7 +364,7 @@ ${JSON.stringify(goals, null, 2)}
           return {
             content: [{
               type: 'text',
-              text: `✓ ${result.message}`,
+              text: `✓ ${result.message}${result.entry_id ? `\n  Entry ID: ${result.entry_id} (use this to edit or delete)` : ''}`,
             }],
           };
         } else {
@@ -378,6 +381,76 @@ ${JSON.stringify(goals, null, 2)}
           content: [{
             type: 'text',
             text: `Error adding food: ${message}`,
+          }],
+        };
+      }
+    }
+  );
+
+  // Register the delete_diary_entry tool
+  server.tool(
+    'delete_diary_entry',
+    'Delete a diary entry by its entry ID (get the ID from get_diary). Permanent.',
+    {
+      entry_id: z.string().min(1).describe('The diary entry ID to delete (from get_diary)'),
+    },
+    async ({ entry_id }): Promise<{ content: Array<{ type: 'text'; text: string }> }> => {
+      try {
+        const result = await client.deleteEntry(entry_id);
+        return {
+          content: [{
+            type: 'text',
+            text: result.success ? `✓ ${result.message}` : `✗ ${result.message}`,
+          }],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error occurred';
+        return {
+          content: [{
+            type: 'text',
+            text: `Error deleting entry: ${message}`,
+          }],
+        };
+      }
+    }
+  );
+
+  // Register the edit_entry tool
+  server.tool(
+    'edit_entry',
+    'Edit an existing diary entry\'s servings and/or meal slot. Get the entry ID and its date from get_diary. At least one of servings or meal must be provided.',
+    {
+      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { message: 'Date must be in YYYY-MM-DD format' })
+        .describe('Date of the entry in YYYY-MM-DD format (from get_diary)'),
+      entry_id: z.string().min(1).describe('The diary entry ID to edit (from get_diary)'),
+      servings: z.number().positive().optional().describe('New number of servings (optional)'),
+      meal: z.enum(['Breakfast', 'Lunch', 'Dinner', 'Snacks']).optional().describe('New meal slot (optional)'),
+    },
+    async ({ date, entry_id, servings, meal }): Promise<{ content: Array<{ type: 'text'; text: string }> }> => {
+      try {
+        if (servings === undefined && meal === undefined) {
+          return {
+            content: [{ type: 'text', text: '✗ Provide at least one of `servings` or `meal` to change.' }],
+          };
+        }
+        const result = await client.editEntry({
+          date,
+          entry_id,
+          servings,
+          meal: meal as MealSlot | undefined,
+        });
+        return {
+          content: [{
+            type: 'text',
+            text: `✓ ${result.message}${result.entry_id ? `\n  New entry ID: ${result.entry_id}` : ''}`,
+          }],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error occurred';
+        return {
+          content: [{
+            type: 'text',
+            text: `Error editing entry: ${message}`,
           }],
         };
       }
